@@ -1,4 +1,4 @@
-name: Handheld Torches fixed.5 reconstruction
+name: Handheld Torches fixed.5 build
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  reconstruct-and-baseline-build:
+  build-fixed5:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -38,6 +38,7 @@ jobs:
           set -euo pipefail
           dotnet tool install --tool-path .tools ilspycmd --version 9.1.0.7988
           .tools/ilspycmd --version | tee work/logs/ILSPY-VERSION.txt
+          dotnet --info | tee work/logs/DOTNET-INFO.txt
 
       - name: Download exact Daggerfall Unity 1.1.1 release assemblies
         shell: bash
@@ -53,24 +54,37 @@ jobs:
           printf '%s\n' "$MANAGED" | tee work/logs/DFU-MANAGED-PATH.txt
           find "$MANAGED" -maxdepth 1 -type f -name '*.dll' -print0 | sort -z | xargs -0 sha256sum > work/logs/DFU-REFERENCE-SHA256.txt
 
-      - name: Decompile with exact DFU references
+      - name: Decompile exact fixed.4 with exact references
         shell: bash
         run: |
           set -euo pipefail
           MANAGED="$(cat work/logs/DFU-MANAGED-PATH.txt)"
-          rm -rf work/source-fixed4 work/il-fixed4
           mkdir -p work/source-fixed4 work/il-fixed4
           .tools/ilspycmd -r "$MANAGED" -p -o work/source-fixed4 work/Handheld-Torches-1.4.1-fixed.4.dll 2>&1 | tee work/logs/DECOMPILE-CSHARP.txt
           .tools/ilspycmd -r "$MANAGED" -il -o work/il-fixed4 work/Handheld-Torches-1.4.1-fixed.4.dll 2>&1 | tee work/logs/DECOMPILE-IL.txt
           sed -i '/RefSafetyRules/d' work/source-fixed4/Properties/AssemblyInfo.cs
-          find work/source-fixed4 -type f -print | sort | tee work/logs/SOURCE-FILE-LIST.txt
 
-      - name: Generate exact-reference baseline project
+      - name: Apply surgical fixed.5 production patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build-payload
+          tr -d '\r\n' < build/build-payload.tar.gz.b64 | base64 --decode > work/build-payload.tar.gz
+          echo "2194d2a803a834e25c49832cc335cfccb1c61b064c11e1822a097b4641381e19  work/build-payload.tar.gz" | sha256sum -c -
+          tar -xzf work/build-payload.tar.gz
+          cp -a work/source-fixed4 work/source-fixed5
+          cp build-payload/HandheldTorchesSaveTransaction.cs work/source-fixed5/
+          cp build-payload/HandheldTorchesCompatibility.cs work/source-fixed5/
+          HT_SOURCE_ROOT=work/source-fixed5 HT_COMPAT_BLOCK=build-payload/compat_block.cs.txt HT_THROW_BLOCK=build-payload/throw_block.cs.txt python build-payload/patch_fixed5_source.py | tee work/logs/PATCH-LOG.txt
+          diff -ruN work/source-fixed4 work/source-fixed5 > work/SOURCE-DIFF.patch || true
+          test -s work/SOURCE-DIFF.patch
+
+      - name: Generate exact-reference fixed.5 project
         shell: bash
         run: |
           set -euo pipefail
           MANAGED="$(cat work/logs/DFU-MANAGED-PATH.txt)"
-          PROJECT=work/source-fixed4/Handheld-Torches-Baseline.csproj
+          PROJECT=work/source-fixed5/Handheld-Torches-fixed.5.csproj
           {
             echo '<Project Sdk="Microsoft.NET.Sdk">'
             echo '  <PropertyGroup>'
@@ -80,51 +94,62 @@ jobs:
             echo '    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>'
             echo '    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>'
             echo '    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>'
+            echo '    <Deterministic>false</Deterministic>'
             echo '  </PropertyGroup>'
             echo '  <ItemGroup>'
             echo '    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net472" Version="1.0.3" PrivateAssets="All" />'
+            echo '    <PackageReference Include="Lib.Harmony" Version="2.3.3" PrivateAssets="All" GeneratePathProperty="true" />'
             for dll in 'Assembly-CSharp.dll' 'UnityEngine.CoreModule.dll' 'UnityEngine.PhysicsModule.dll' 'UnityEngine.AudioModule.dll' 'UnityEngine.IMGUIModule.dll' 'FullSerializer - Unity.dll'; do
               test -f "$MANAGED/$dll"
               name="${dll%.dll}"
               printf '    <Reference Include="%s"><HintPath>%s/%s</HintPath><Private>false</Private></Reference>\n' "$name" "$MANAGED" "$dll"
             done
+            echo '    <EmbeddedResource Include="$(PkgLib_Harmony)/lib/net472/0Harmony.dll" LogicalName="HandheldTorches.0Harmony.dll" />'
             echo '  </ItemGroup>'
             echo '</Project>'
           } > "$PROJECT"
-          cat "$PROJECT" | tee work/logs/BASELINE-CSPROJ.txt
+          cat "$PROJECT" | tee work/logs/FIXED5-CSPROJ.txt
 
-      - name: Compile baseline reconstruction
+      - name: Compile actual fixed.5 DLL
         shell: bash
         run: |
           set -o pipefail
-          dotnet build work/source-fixed4/Handheld-Torches-Baseline.csproj -c Release -v:minimal 2>&1 | tee work/logs/BASELINE-BUILD-LOG.txt
+          dotnet build work/source-fixed5/Handheld-Torches-fixed.5.csproj -c Release -v:minimal 2>&1 | tee work/logs/BUILD-LOG.txt
           exit "${PIPESTATUS[0]}"
 
-      - name: Record compiled baseline metadata
+      - name: Verify fixed.5 DLL identity and embedded Harmony
         if: success()
         shell: bash
         run: |
           set -euo pipefail
-          DLL='work/source-fixed4/bin/Release/net472/Handheld Torches.dll'
-          stat -c '%s %n' "$DLL" | tee work/logs/BASELINE-DLL-SIZE.txt
-          sha256sum "$DLL" | tee work/logs/BASELINE-DLL-SHA256.txt
-          .tools/ilspycmd -il -o work/il-recompiled-baseline "$DLL" 2>&1 | tee work/logs/BASELINE-RECOMPILED-IL.txt
+          DLL='work/source-fixed5/bin/Release/net472/Handheld Torches.dll'
+          test -f "$DLL"
+          ! cmp -s "$DLL" work/Handheld-Torches-1.4.1-fixed.4.dll
+          stat -c '%s %n' "$DLL" | tee work/logs/FIXED5-DLL-SIZE.txt
+          sha256sum "$DLL" | tee work/logs/FIXED5-DLL-SHA256.txt
+          .tools/ilspycmd -il -o work/il-fixed5 "$DLL" 2>&1 | tee work/logs/FIXED5-ILSPY.txt
+          grep -R "HandheldTorchesSaveTransaction" work/il-fixed5 >/dev/null
+          grep -R "ShouldSuppressToggleInput" work/il-fixed5 >/dev/null
+          grep -R "ShouldSuppressDropInput" work/il-fixed5 >/dev/null
+          grep -R "ShouldSuppressThrowInput" work/il-fixed5 >/dev/null
+          grep -R "HandheldTorches.0Harmony.dll" work/il-fixed5 >/dev/null
+          grep -R -m1 -E 'MVID|module' work/il-fixed5 | tee work/logs/FIXED5-MVID-RAW.txt || true
 
-      - name: Package baseline reconstruction artifact
+      - name: Package compile artifact
         if: always()
         shell: bash
         run: |
           set -euo pipefail
           cd work
-          zip -9 -r ../fixed4-baseline-build.zip Handheld-Torches-1.4.1-fixed.4.dll source-fixed4 il-fixed4 logs ${PWD}/il-recompiled-baseline 2>/dev/null || zip -9 -r ../fixed4-baseline-build.zip Handheld-Torches-1.4.1-fixed.4.dll source-fixed4 il-fixed4 logs
+          zip -9 -r ../fixed5-compile.zip Handheld-Torches-1.4.1-fixed.4.dll source-fixed4 source-fixed5 il-fixed4 il-fixed5 logs SOURCE-DIFF.patch 2>/dev/null || zip -9 -r ../fixed5-compile.zip Handheld-Torches-1.4.1-fixed.4.dll source-fixed4 source-fixed5 il-fixed4 logs SOURCE-DIFF.patch
           cd ..
-          sha256sum fixed4-baseline-build.zip
+          sha256sum fixed5-compile.zip
 
-      - name: Upload baseline reconstruction
+      - name: Upload fixed.5 compile artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fixed4-baseline-build
-          path: fixed4-baseline-build.zip
+          name: fixed5-compile
+          path: fixed5-compile.zip
           if-no-files-found: error
           retention-days: 7
