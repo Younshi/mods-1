@@ -27,7 +27,7 @@ jobs:
           echo "46116e7749b1fb04d9575edf11eb421543715441cc2062046570b21e301f1c75  work/Handheld-Torches-1.4.1-fixed.4.dll" | sha256sum -c -
           sha256sum work/Handheld-Torches-1.4.1-fixed.4.dll | tee work/logs/FIXED4-SHA256.txt
 
-      - name: Install .NET 8 and ILSpy
+      - name: Install .NET 8
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
@@ -49,6 +49,7 @@ jobs:
           unzip -q work/dfu_linux_64bit-v1.1.1.zip -d work/dfu
           MANAGED="$(find work/dfu -type d -path '*/DaggerfallUnity_Data/Managed' -print -quit)"
           test -n "$MANAGED"
+          MANAGED="$(realpath "$MANAGED")"
           printf '%s\n' "$MANAGED" | tee work/logs/DFU-MANAGED-PATH.txt
           find "$MANAGED" -maxdepth 1 -type f -name '*.dll' -print0 | sort -z | xargs -0 sha256sum > work/logs/DFU-REFERENCE-SHA256.txt
 
@@ -61,6 +62,7 @@ jobs:
           mkdir -p work/source-fixed4 work/il-fixed4
           .tools/ilspycmd -r "$MANAGED" -p -o work/source-fixed4 work/Handheld-Torches-1.4.1-fixed.4.dll 2>&1 | tee work/logs/DECOMPILE-CSHARP.txt
           .tools/ilspycmd -r "$MANAGED" -il -o work/il-fixed4 work/Handheld-Torches-1.4.1-fixed.4.dll 2>&1 | tee work/logs/DECOMPILE-IL.txt
+          sed -i '/RefSafetyRules/d' work/source-fixed4/Properties/AssemblyInfo.cs
           find work/source-fixed4 -type f -print | sort | tee work/logs/SOURCE-FILE-LIST.txt
 
       - name: Generate exact-reference baseline project
@@ -98,13 +100,23 @@ jobs:
           dotnet build work/source-fixed4/Handheld-Torches-Baseline.csproj -c Release -v:minimal 2>&1 | tee work/logs/BASELINE-BUILD-LOG.txt
           exit "${PIPESTATUS[0]}"
 
+      - name: Record compiled baseline metadata
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          DLL='work/source-fixed4/bin/Release/net472/Handheld Torches.dll'
+          stat -c '%s %n' "$DLL" | tee work/logs/BASELINE-DLL-SIZE.txt
+          sha256sum "$DLL" | tee work/logs/BASELINE-DLL-SHA256.txt
+          .tools/ilspycmd -il -o work/il-recompiled-baseline "$DLL" 2>&1 | tee work/logs/BASELINE-RECOMPILED-IL.txt
+
       - name: Package baseline reconstruction artifact
         if: always()
         shell: bash
         run: |
           set -euo pipefail
           cd work
-          zip -9 -r ../fixed4-baseline-build.zip Handheld-Torches-1.4.1-fixed.4.dll source-fixed4 il-fixed4 logs
+          zip -9 -r ../fixed4-baseline-build.zip Handheld-Torches-1.4.1-fixed.4.dll source-fixed4 il-fixed4 logs ${PWD}/il-recompiled-baseline 2>/dev/null || zip -9 -r ../fixed4-baseline-build.zip Handheld-Torches-1.4.1-fixed.4.dll source-fixed4 il-fixed4 logs
           cd ..
           sha256sum fixed4-baseline-build.zip
 
