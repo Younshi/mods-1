@@ -1,0 +1,67 @@
+name: Handheld Torches fixed.5 reconstruction
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reconstruct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout isolated build branch
+        uses: actions/checkout@v4
+
+      - name: Reconstruct exact fixed.4 DLL
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/logs
+          cat inputs/fixed4.dll.gz.b64.* | tr -d '\r\n' | base64 --decode > work/fixed4.dll.gz
+          gzip -dc work/fixed4.dll.gz > work/Handheld-Torches-1.4.1-fixed.4.dll
+          test "$(stat -c '%s' work/Handheld-Torches-1.4.1-fixed.4.dll)" = "90112"
+          echo "46116e7749b1fb04d9575edf11eb421543715441cc2062046570b21e301f1c75  work/Handheld-Torches-1.4.1-fixed.4.dll" | sha256sum -c -
+          sha256sum work/Handheld-Torches-1.4.1-fixed.4.dll | tee work/logs/FIXED4-SHA256.txt
+
+      - name: Install .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install ILSpy command-line decompiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet tool install --tool-path .tools ilspycmd --version 9.1.0.7988
+          .tools/ilspycmd --version | tee work/logs/ILSPY-VERSION.txt
+
+      - name: Decompile complete production assembly
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/source-fixed4 work/il-fixed4
+          .tools/ilspycmd -p -o work/source-fixed4 work/Handheld-Torches-1.4.1-fixed.4.dll 2>&1 | tee work/logs/DECOMPILE-CSHARP.txt
+          .tools/ilspycmd -il -o work/il-fixed4 work/Handheld-Torches-1.4.1-fixed.4.dll 2>&1 | tee work/logs/DECOMPILE-IL.txt
+          find work/source-fixed4 -type f -print | sort | tee work/logs/SOURCE-FILE-LIST.txt
+          find work/il-fixed4 -type f -print | sort | tee work/logs/IL-FILE-LIST.txt
+
+      - name: Package reconstruction artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work
+          zip -9 -r ../fixed4-reconstruction.zip Handheld-Torches-1.4.1-fixed.4.dll source-fixed4 il-fixed4 logs
+          cd ..
+          sha256sum fixed4-reconstruction.zip
+
+      - name: Upload reconstruction
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixed4-reconstruction
+          path: fixed4-reconstruction.zip
+          if-no-files-found: error
+          retention-days: 7
