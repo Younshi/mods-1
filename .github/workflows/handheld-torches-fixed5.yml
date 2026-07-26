@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  reconstruct:
+  reconstruct-and-baseline-build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout isolated build branch
         uses: actions/checkout@v4
@@ -27,7 +27,7 @@ jobs:
           echo "46116e7749b1fb04d9575edf11eb421543715441cc2062046570b21e301f1c75  work/Handheld-Torches-1.4.1-fixed.4.dll" | sha256sum -c -
           sha256sum work/Handheld-Torches-1.4.1-fixed.4.dll | tee work/logs/FIXED4-SHA256.txt
 
-      - name: Install .NET 8
+      - name: Install .NET 8 and ILSpy
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
@@ -39,29 +39,80 @@ jobs:
           dotnet tool install --tool-path .tools ilspycmd --version 9.1.0.7988
           .tools/ilspycmd --version | tee work/logs/ILSPY-VERSION.txt
 
-      - name: Decompile complete production assembly
+      - name: Download exact Daggerfall Unity 1.1.1 release assemblies
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p work/source-fixed4 work/il-fixed4
-          .tools/ilspycmd -p -o work/source-fixed4 work/Handheld-Torches-1.4.1-fixed.4.dll 2>&1 | tee work/logs/DECOMPILE-CSHARP.txt
-          .tools/ilspycmd -il -o work/il-fixed4 work/Handheld-Torches-1.4.1-fixed.4.dll 2>&1 | tee work/logs/DECOMPILE-IL.txt
-          find work/source-fixed4 -type f -print | sort | tee work/logs/SOURCE-FILE-LIST.txt
-          find work/il-fixed4 -type f -print | sort | tee work/logs/IL-FILE-LIST.txt
+          curl -fL --retry 3 -o work/dfu_linux_64bit-v1.1.1.zip https://github.com/Interkarma/daggerfall-unity/releases/download/v1.1.1/dfu_linux_64bit-v1.1.1.zip
+          sha256sum work/dfu_linux_64bit-v1.1.1.zip | tee work/logs/DFU-RELEASE-SHA256.txt
+          mkdir -p work/dfu
+          unzip -q work/dfu_linux_64bit-v1.1.1.zip -d work/dfu
+          MANAGED="$(find work/dfu -type d -path '*/DaggerfallUnity_Data/Managed' -print -quit)"
+          test -n "$MANAGED"
+          printf '%s\n' "$MANAGED" | tee work/logs/DFU-MANAGED-PATH.txt
+          find "$MANAGED" -maxdepth 1 -type f -name '*.dll' -print0 | sort -z | xargs -0 sha256sum > work/logs/DFU-REFERENCE-SHA256.txt
 
-      - name: Package reconstruction artifact
+      - name: Decompile with exact DFU references
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANAGED="$(cat work/logs/DFU-MANAGED-PATH.txt)"
+          rm -rf work/source-fixed4 work/il-fixed4
+          mkdir -p work/source-fixed4 work/il-fixed4
+          .tools/ilspycmd -r "$MANAGED" -p -o work/source-fixed4 work/Handheld-Torches-1.4.1-fixed.4.dll 2>&1 | tee work/logs/DECOMPILE-CSHARP.txt
+          .tools/ilspycmd -r "$MANAGED" -il -o work/il-fixed4 work/Handheld-Torches-1.4.1-fixed.4.dll 2>&1 | tee work/logs/DECOMPILE-IL.txt
+          find work/source-fixed4 -type f -print | sort | tee work/logs/SOURCE-FILE-LIST.txt
+
+      - name: Generate exact-reference baseline project
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANAGED="$(cat work/logs/DFU-MANAGED-PATH.txt)"
+          PROJECT=work/source-fixed4/Handheld-Torches-Baseline.csproj
+          {
+            echo '<Project Sdk="Microsoft.NET.Sdk">'
+            echo '  <PropertyGroup>'
+            echo '    <AssemblyName>Handheld Torches</AssemblyName>'
+            echo '    <TargetFramework>net472</TargetFramework>'
+            echo '    <LangVersion>12.0</LangVersion>'
+            echo '    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>'
+            echo '    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>'
+            echo '    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>'
+            echo '  </PropertyGroup>'
+            echo '  <ItemGroup>'
+            echo '    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net472" Version="1.0.3" PrivateAssets="All" />'
+            for dll in 'Assembly-CSharp.dll' 'UnityEngine.CoreModule.dll' 'UnityEngine.PhysicsModule.dll' 'UnityEngine.AudioModule.dll' 'UnityEngine.IMGUIModule.dll' 'FullSerializer - Unity.dll'; do
+              test -f "$MANAGED/$dll"
+              name="${dll%.dll}"
+              printf '    <Reference Include="%s"><HintPath>%s/%s</HintPath><Private>false</Private></Reference>\n' "$name" "$MANAGED" "$dll"
+            done
+            echo '  </ItemGroup>'
+            echo '</Project>'
+          } > "$PROJECT"
+          cat "$PROJECT" | tee work/logs/BASELINE-CSPROJ.txt
+
+      - name: Compile baseline reconstruction
+        shell: bash
+        run: |
+          set -o pipefail
+          dotnet build work/source-fixed4/Handheld-Torches-Baseline.csproj -c Release -v:minimal 2>&1 | tee work/logs/BASELINE-BUILD-LOG.txt
+          exit "${PIPESTATUS[0]}"
+
+      - name: Package baseline reconstruction artifact
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
           cd work
-          zip -9 -r ../fixed4-reconstruction.zip Handheld-Torches-1.4.1-fixed.4.dll source-fixed4 il-fixed4 logs
+          zip -9 -r ../fixed4-baseline-build.zip Handheld-Torches-1.4.1-fixed.4.dll source-fixed4 il-fixed4 logs
           cd ..
-          sha256sum fixed4-reconstruction.zip
+          sha256sum fixed4-baseline-build.zip
 
-      - name: Upload reconstruction
+      - name: Upload baseline reconstruction
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fixed4-reconstruction
-          path: fixed4-reconstruction.zip
+          name: fixed4-baseline-build
+          path: fixed4-baseline-build.zip
           if-no-files-found: error
           retention-days: 7
