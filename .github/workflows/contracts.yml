@@ -1,0 +1,34 @@
+name: Handheld Torches V5.3 Contracts
+on:
+  pull_request:
+    branches: [ main ]
+permissions:
+  contents: read
+jobs:
+  fingerprints:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Mono
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mono-devel unzip
+      - name: Decode fingerprint utility
+        run: |
+          base64 -d build/FingerprintTool.cs.gz.b64 | gzip -d > build/FingerprintTool.cs
+          mcs -langversion:7.2 -r:System.Core.dll -out:build/FingerprintTool.exe build/FingerprintTool.cs
+      - name: Download official DFU 1.1.1 builds
+        run: |
+          curl -fL --retry 5 --retry-delay 3 -o linux.zip https://github.com/Interkarma/daggerfall-unity/releases/download/v1.1.1/dfu_linux_64bit-v1.1.1.zip
+          curl -fL --retry 5 --retry-delay 3 -o windows.zip https://github.com/Interkarma/daggerfall-unity/releases/download/v1.1.1/dfu_windows_64bit-v1.1.1.zip
+          sha256sum linux.zip windows.zip
+          unzip -q linux.zip -d linux
+          unzip -q windows.zip -d windows
+      - name: Compute normalized IL fingerprints
+        run: |
+          LINUX_MANAGED="$PWD/linux/DaggerfallUnity_Data/Managed"
+          WINDOWS_MANAGED="$PWD/windows/DaggerfallUnity_Data/Managed"
+          echo '=== LINUX CONTRACTS ==='
+          MONO_PATH="$LINUX_MANAGED" mono build/FingerprintTool.exe Linux "$LINUX_MANAGED"
+          echo '=== WINDOWS CONTRACTS ==='
+          MONO_PATH="$WINDOWS_MANAGED" mono build/FingerprintTool.exe Windows "$WINDOWS_MANAGED"
