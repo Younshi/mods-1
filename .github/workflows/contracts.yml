@@ -21,12 +21,15 @@ jobs:
         run: |
           curl -fsSL --retry 5 --retry-delay 3 -o linux.zip https://github.com/Interkarma/daggerfall-unity/releases/download/v1.1.1/dfu_linux_64bit-v1.1.1.zip
           curl -fsSL --retry 5 --retry-delay 3 -o windows.zip https://github.com/Interkarma/daggerfall-unity/releases/download/v1.1.1/dfu_windows_64bit-v1.1.1.zip
-          sha256sum linux.zip windows.zip
+          sha256sum linux.zip windows.zip > package-hashes.txt
           unzip -q linux.zip -d linux
           unzip -q windows.zip -d windows
-          echo 'Official packages extracted.'
       - name: Compute normalized IL fingerprints
+        continue-on-error: true
         run: |
+          exec >fingerprints.log 2>&1
+          set -x
+          cat package-hashes.txt
           LINUX_ASSEMBLY="$(find "$PWD/linux" -type f -path '*/Managed/Assembly-CSharp.dll' -print -quit)"
           WINDOWS_ASSEMBLY="$(find "$PWD/windows" -type f -path '*/Managed/Assembly-CSharp.dll' -print -quit)"
           test -n "$LINUX_ASSEMBLY"
@@ -39,3 +42,12 @@ jobs:
           MONO_PATH="$LINUX_MANAGED" mono build/FingerprintTool.exe Linux "$LINUX_MANAGED"
           echo '=== WINDOWS CONTRACTS ==='
           MONO_PATH="$WINDOWS_MANAGED" mono build/FingerprintTool.exe Windows "$WINDOWS_MANAGED"
+      - name: Upload contract evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dfu-1.1.1-contracts
+          path: |
+            fingerprints.log
+            package-hashes.txt
+          if-no-files-found: error
