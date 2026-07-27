@@ -26,8 +26,14 @@ jobs:
           unzip -q windows.zip -d windows
       - name: Compute normalized IL fingerprints
         run: |
-          LINUX_MANAGED="$PWD/linux/DaggerfallUnity_Data/Managed"
-          WINDOWS_MANAGED="$PWD/windows/DaggerfallUnity_Data/Managed"
+          LINUX_ASSEMBLY="$(find "$PWD/linux" -type f -path '*/Managed/Assembly-CSharp.dll' -print -quit)"
+          WINDOWS_ASSEMBLY="$(find "$PWD/windows" -type f -path '*/Managed/Assembly-CSharp.dll' -print -quit)"
+          test -n "$LINUX_ASSEMBLY"
+          test -n "$WINDOWS_ASSEMBLY"
+          LINUX_MANAGED="$(dirname "$LINUX_ASSEMBLY")"
+          WINDOWS_MANAGED="$(dirname "$WINDOWS_ASSEMBLY")"
+          echo "LINUX_MANAGED=$LINUX_MANAGED"
+          echo "WINDOWS_MANAGED=$WINDOWS_MANAGED"
           echo '=== LINUX CONTRACTS ==='
           MONO_PATH="$LINUX_MANAGED" mono build/FingerprintTool.exe Linux "$LINUX_MANAGED"
           echo '=== WINDOWS CONTRACTS ==='
