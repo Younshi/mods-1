@@ -1,0 +1,53 @@
+name: Handheld Torches V5.3 Contracts
+on:
+  pull_request:
+    branches: [ main ]
+permissions:
+  contents: read
+jobs:
+  fingerprints:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Mono
+        run: |
+          sudo apt-get update -qq >/dev/null
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mono-devel unzip >/dev/null
+      - name: Decode fingerprint utility
+        run: |
+          base64 -d build/FingerprintTool.cs.gz.b64 | gzip -d > build/FingerprintTool.cs
+          mcs -langversion:7.2 -r:System.Core.dll -out:build/FingerprintTool.exe build/FingerprintTool.cs
+      - name: Download official DFU 1.1.1 builds
+        run: |
+          curl -fsSL --retry 5 --retry-delay 3 -o linux.zip https://github.com/Interkarma/daggerfall-unity/releases/download/v1.1.1/dfu_linux_64bit-v1.1.1.zip
+          curl -fsSL --retry 5 --retry-delay 3 -o windows.zip https://github.com/Interkarma/daggerfall-unity/releases/download/v1.1.1/dfu_windows_64bit-v1.1.1.zip
+          sha256sum linux.zip windows.zip > package-hashes.txt
+          unzip -q linux.zip -d linux
+          unzip -q windows.zip -d windows
+      - name: Compute normalized IL fingerprints
+        continue-on-error: true
+        run: |
+          exec >fingerprints.log 2>&1
+          set -x
+          cat package-hashes.txt
+          LINUX_ASSEMBLY="$(find "$PWD/linux" -type f -path '*/Managed/Assembly-CSharp.dll' -print -quit)"
+          WINDOWS_ASSEMBLY="$(find "$PWD/windows" -type f -path '*/Managed/Assembly-CSharp.dll' -print -quit)"
+          test -n "$LINUX_ASSEMBLY"
+          test -n "$WINDOWS_ASSEMBLY"
+          LINUX_MANAGED="$(dirname "$LINUX_ASSEMBLY")"
+          WINDOWS_MANAGED="$(dirname "$WINDOWS_ASSEMBLY")"
+          echo "LINUX_MANAGED=$LINUX_MANAGED"
+          echo "WINDOWS_MANAGED=$WINDOWS_MANAGED"
+          echo '=== LINUX CONTRACTS ==='
+          mono build/FingerprintTool.exe Linux "$LINUX_MANAGED"
+          echo '=== WINDOWS CONTRACTS ==='
+          mono build/FingerprintTool.exe Windows "$WINDOWS_MANAGED"
+      - name: Upload contract evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dfu-1.1.1-contracts
+          path: |
+            fingerprints.log
+            package-hashes.txt
+          if-no-files-found: error
