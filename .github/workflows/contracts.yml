@@ -39,9 +39,9 @@ jobs:
           echo "LINUX_MANAGED=$LINUX_MANAGED"
           echo "WINDOWS_MANAGED=$WINDOWS_MANAGED"
           echo '=== LINUX CONTRACTS ==='
-          MONO_PATH="$LINUX_MANAGED" mono build/FingerprintTool.exe Linux "$LINUX_MANAGED"
+          mono build/FingerprintTool.exe Linux "$LINUX_MANAGED"
           echo '=== WINDOWS CONTRACTS ==='
-          MONO_PATH="$WINDOWS_MANAGED" mono build/FingerprintTool.exe Windows "$WINDOWS_MANAGED"
+          mono build/FingerprintTool.exe Windows "$WINDOWS_MANAGED"
       - name: Upload contract evidence
         if: always()
         uses: actions/upload-artifact@v4
